@@ -49,6 +49,7 @@ typedef uint8_t libn_nonce_t[16];
 typedef enum {
     LIBN_COIN_TYPE_NANO,
     LIBN_COIN_TYPE_BANANO,
+    LIBN_COIN_TYPE_NOS,
 } libn_coin_type_t;
 
 typedef enum {
@@ -82,6 +83,17 @@ typedef struct {
     const bagl_icon_details_t *iconToggleOn;
 #endif // TARGET_BLUE
 } libn_coin_conf_t;
+
+typedef struct {
+    char *prefix;
+    uint8_t prefixLen;
+} libn_address_formatter_t;
+
+typedef struct {
+    char *suffix;
+    uint8_t suffixLen;
+    uint8_t unitScale;
+} libn_amount_formatter_t;
 
 typedef struct {
     libn_hash_t parent;

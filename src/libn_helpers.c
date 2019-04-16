@@ -83,29 +83,96 @@ void libn_write_hex_string(uint8_t *buffer, const uint8_t *bytes, size_t bytesLe
     }
 }
 
-size_t libn_write_account_string(uint8_t *buffer, libn_address_prefix_t prefix,
-                                 const libn_public_key_t publicKey) {
-    uint8_t prefixLen;
+// Extract a single-path component from the encoded bip32 path
+uint32_t libn_bip32_get_component(uint8_t *path, uint8_t n) {
+    uint8_t pathLength = path[0];
+    if (n >= pathLength) {
+        THROW(INVALID_PARAMETER);
+    }
+    return libn_read_u32(&path[1 + 4 * n], 1, 0);
+}
+
+void libn_address_formatter_for_coin(libn_address_formatter_t *fmt, libn_address_prefix_t prefix, uint8_t *bip32Path) {
+    // NOS multi-currency coin handling
+    if (strcmp(COIN_NAME, "NOS") == 0) {
+        uint32_t currencyComponent = libn_bip32_get_component(bip32Path, 2);
+
+        #define SUBCURRENCY(CODE, PREFIX, SUFFIX, SCALE) \
+            case HARDENED((CODE)): \
+                fmt->prefix = (PREFIX); \
+                fmt->prefixLen = strlen((PREFIX)); \
+                break
+        switch (currencyComponent) {
+        #include "nos_subcurrencies.h"
+        case HARDENED(0):
+            fmt->prefix = COIN_PRIMARY_PREFIX;
+            fmt->prefixLen = strnlen(COIN_PRIMARY_PREFIX, sizeof(COIN_PRIMARY_PREFIX));
+            break;
+        default:
+            THROW(INVALID_PARAMETER);
+        }
+        #undef SUBCURRENCY
+        return;
+    }
+
+    // Default prefixes
+    switch (prefix) {
+    case LIBN_PRIMARY_PREFIX:
+        fmt->prefix = COIN_PRIMARY_PREFIX;
+        fmt->prefixLen = strnlen(COIN_PRIMARY_PREFIX, sizeof(COIN_PRIMARY_PREFIX));
+        break;
+    case LIBN_SECONDARY_PREFIX:
+        fmt->prefix = COIN_SECONDARY_PREFIX;
+        fmt->prefixLen = strnlen(COIN_SECONDARY_PREFIX, sizeof(COIN_SECONDARY_PREFIX));
+        break;
+    }
+}
+
+void libn_amount_formatter_for_coin(libn_amount_formatter_t *fmt, uint8_t *bip32Path) {
+    // NOS multi-currency coin handling
+    if (strcmp(COIN_NAME, "NOS") == 0) {
+        uint32_t currencyComponent = libn_bip32_get_component(bip32Path, 2);
+
+        #define SUBCURRENCY(CODE, PREFIX, SUFFIX, SCALE) \
+            case HARDENED((CODE)): \
+                fmt->suffix = (SUFFIX); \
+                fmt->suffixLen = strlen((SUFFIX)); \
+                fmt->unitScale = SCALE; \
+                break
+        switch (currencyComponent) {
+        #include "nos_subcurrencies.h"
+        case HARDENED(0):
+            fmt->suffix = COIN_UNIT;
+            fmt->suffixLen = strnlen(COIN_UNIT, sizeof(COIN_UNIT));
+            fmt->unitScale = COIN_UNIT_SCALE;
+            break;
+        default:
+            THROW(INVALID_PARAMETER);
+        }
+        #undef SUBCURRENCY
+        return;
+    }
+
+    // Default prefixes
+    fmt->suffix = COIN_UNIT;
+    fmt->suffixLen = strnlen(COIN_UNIT, sizeof(COIN_UNIT));
+    fmt->unitScale = COIN_UNIT_SCALE;
+}
+
+size_t libn_address_format(const libn_address_formatter_t *fmt,
+                           uint8_t *buffer,
+                           const libn_public_key_t publicKey) {
     uint8_t k, i, c;
     uint8_t check[5];
 
-    blake2b_ctx *hash = &ram_b.blake2b_ctx_D;
-    blake2b_init(hash, sizeof(check), NULL, 0);
-    blake2b_update(hash, publicKey, sizeof(libn_public_key_t));
-    blake2b_final(hash, check);
+    blake2b_ctx hash;
+    blake2b_init(&hash, sizeof(check), NULL, 0);
+    blake2b_update(&hash, publicKey, sizeof(libn_public_key_t));
+    blake2b_final(&hash, check);
 
-    switch (prefix) {
-    case LIBN_PRIMARY_PREFIX:
-        prefixLen = strnlen(COIN_PRIMARY_PREFIX, sizeof(COIN_PRIMARY_PREFIX));
-        os_memmove(buffer, COIN_PRIMARY_PREFIX, prefixLen);
-        buffer += prefixLen;
-        break;
-    case LIBN_SECONDARY_PREFIX:
-        prefixLen = strnlen(COIN_SECONDARY_PREFIX, sizeof(COIN_SECONDARY_PREFIX));
-        os_memmove(buffer, COIN_SECONDARY_PREFIX, prefixLen);
-        buffer += prefixLen;
-        break;
-    }
+    // Write prefix
+    os_memmove(buffer, fmt->prefix, fmt->prefixLen);
+    buffer += fmt->prefixLen;
 
     // Helper macro to create a virtual array of check and publicKey variables
     #define accGetByte(x) (uint8_t)( \
@@ -149,7 +216,7 @@ size_t libn_write_account_string(uint8_t *buffer, libn_address_prefix_t prefix,
         buffer[LIBN_ACCOUNT_STRING_BASE_LEN-1-k] = BASE32_ALPHABET[c];
     }
     #undef accGetByte
-    return prefixLen + LIBN_ACCOUNT_STRING_BASE_LEN;
+    return fmt->prefixLen + LIBN_ACCOUNT_STRING_BASE_LEN;
 }
 
 int8_t libn_amount_cmp(const libn_amount_t a, const libn_amount_t b) {
@@ -175,16 +242,23 @@ void libn_amount_subtract(libn_amount_t value, const libn_amount_t other) {
     }
 }
 
-void libn_amount_format(char *dest, size_t destLen,
+void libn_amount_format(const libn_amount_formatter_t *fmt,
+                        char *dest, size_t destLen,
                         const libn_amount_t balance) {
-    libn_amount_format_heap_t *h = &ram_b.libn_amount_format_heap_D;
-    os_memset(h->buf, 0, sizeof(h->buf));
-    os_memmove(h->num, balance, sizeof(h->num));
-    h->unitLen = strnlen(COIN_UNIT, sizeof(COIN_UNIT));
+    // MaxUInt128 = 340282366920938463463374607431768211455 (39 digits)
+    char buf[39 /* digits */
+             + 1 /* period */
+             + 1 /* " " before unit */
+             + sizeof((libn_coin_conf_t){}.defaultUnit)
+             + 1 /* '\0' NULL terminator */];
+    libn_amount_t num;
 
-    size_t end = sizeof(h->buf);
+    os_memset(buf, 0, sizeof(buf));
+    os_memmove(num, balance, sizeof(num));
+
+    size_t end = sizeof(buf);
     end -= 1; // '\0' NULL terminator
-    end -= 1 + h->unitLen; // len(" " + defaultUnit)
+    end -= 1 + fmt->suffixLen; // len(" " + suffix)
     size_t start = end;
 
     // Convert the balance into a string by dividing by 10 until
@@ -192,96 +266,92 @@ void libn_amount_format(char *dest, size_t destLen,
     uint16_t r;
     uint16_t d;
     do {
-        r = h->num[0];
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[1]; h->num[0] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[2]; h->num[1] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[3]; h->num[2] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[4]; h->num[3] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[5]; h->num[4] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[6]; h->num[5] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[7]; h->num[6] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[8]; h->num[7] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[9]; h->num[8] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[10]; h->num[9] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[11]; h->num[10] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[12]; h->num[11] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[13]; h->num[12] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[14]; h->num[13] = d;
-        d = r / 10; r = ((r - d * 10) << 8) + h->num[15]; h->num[14] = d;
-        d = r / 10; r = r - d * 10; h->num[15] = d;
-        h->buf[--start] = '0' + r;
-    } while (h->num[0]  || h->num[1]  || h->num[2]  || h->num[3]  ||
-             h->num[4]  || h->num[5]  || h->num[6]  || h->num[7]  ||
-             h->num[8]  || h->num[9]  || h->num[10] || h->num[11] ||
-             h->num[12] || h->num[13] || h->num[14] || h->num[15]);
+        r = num[0];
+        d = r / 10; r = ((r - d * 10) << 8) + num[1]; num[0] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[2]; num[1] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[3]; num[2] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[4]; num[3] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[5]; num[4] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[6]; num[5] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[7]; num[6] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[8]; num[7] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[9]; num[8] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[10]; num[9] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[11]; num[10] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[12]; num[11] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[13]; num[12] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[14]; num[13] = d;
+        d = r / 10; r = ((r - d * 10) << 8) + num[15]; num[14] = d;
+        d = r / 10; r = r - d * 10; num[15] = d;
+        buf[--start] = '0' + r;
+    } while (num[0]  || num[1]  || num[2]  || num[3]  ||
+             num[4]  || num[5]  || num[6]  || num[7]  ||
+             num[8]  || num[9]  || num[10] || num[11] ||
+             num[12] || num[13] || num[14] || num[15]);
 
     // Assign the location for the decimal point
-    size_t point = end - 1 - COIN_UNIT_SCALE;
+    size_t point = end - 1 - fmt->unitScale;
     // Make sure that the number is zero padded until the point location
     while (start > point) {
-        h->buf[--start] = '0';
+        buf[--start] = '0';
     }
     // Move digits before the point one place to the left
     for (size_t i = start; i <= point; i++) {
-        h->buf[i-1] = h->buf[i];
+        buf[i-1] = buf[i];
     }
     start -= 1;
     // It's safe to write out the point now
     if (point != end) {
-        h->buf[point] = '.';
+        buf[point] = '.';
     }
 
     // Remove as many zeros from the fractional part as possible
-    while (end > point && (h->buf[end-1] == '0' || h->buf[end-1] == '.')) {
+    while (end > point && (buf[end-1] == '0' || buf[end-1] == '.')) {
         end -= 1;
     }
-    h->buf[end] = '\0';
+    buf[end] = '\0';
 
     // Append the unit
-    h->buf[end++] = ' ';
-    os_memmove(h->buf + end, COIN_UNIT, h->unitLen);
-    end += h->unitLen;
-    h->buf[end] = '\0';
+    buf[end++] = ' ';
+    os_memmove(buf + end, fmt->suffix, fmt->suffixLen);
+    end += fmt->suffixLen;
+    buf[end] = '\0';
 
     // Copy the result to the destination buffer
-    os_memmove(dest, h->buf + start, MIN(destLen - 1, end - start + 1));
+    os_memmove(dest, buf + start, MIN(destLen - 1, end - start + 1));
     dest[destLen - 1] = '\0';
 }
 
 void libn_derive_keypair(uint8_t *bip32Path,
                          libn_private_key_t out_privateKey,
                          libn_public_key_t out_publicKey) {
-    // NB! Explicit scope to limit usage of `h` as it becomes invalid
-    //     once the ed25519 function is called. The memory will be
-    //     reused for blake2b hashing.
-    {
-        libn_derive_keypair_heap_t *h = &ram_b.libn_derive_keypair_heap_D;
-        uint8_t bip32PathLength;
-        uint8_t i;
-        const uint8_t bip32PrefixLength = sizeof(COIN_BIP32_PREFIX) / sizeof(COIN_BIP32_PREFIX[0]);
+    uint32_t bip32PathInt[MAX_BIP32_PATH];
+    uint8_t chainCode[32];
+    uint8_t bip32PathLength;
+    uint8_t i;
+    const uint8_t bip32PrefixLength = 2;
 
-        bip32PathLength = bip32Path[0];
-        if (bip32PathLength > MAX_BIP32_PATH) {
-            THROW(INVALID_PARAMETER);
-        }
-        bip32Path++;
-        for (i = 0; i < bip32PathLength; i++) {
-            h->bip32PathInt[i] = libn_read_u32(bip32Path, 1, 0);
-            bip32Path += 4;
-        }
-        // Verify that the prefix is the allowed prefix
-        if (bip32PathLength < bip32PrefixLength) {
-            THROW(INVALID_PARAMETER);
-        }
-        for (i = 0; i < bip32PrefixLength; i++) {
-            if (h->bip32PathInt[i] != COIN_BIP32_PREFIX[i]) {
-                THROW(INVALID_PARAMETER);
-            }
-        }
-        os_perso_derive_node_bip32(LIBN_CURVE, h->bip32PathInt, bip32PathLength,
-                                   out_privateKey, h->chainCode);
-        os_memset(h->chainCode, 0, sizeof(h->chainCode));
+    bip32PathLength = bip32Path[0];
+    if (bip32PathLength > MAX_BIP32_PATH) {
+        THROW(INVALID_PARAMETER);
     }
+    bip32Path++;
+    for (i = 0; i < bip32PathLength; i++) {
+        bip32PathInt[i] = libn_read_u32(bip32Path, 1, 0);
+        bip32Path += 4;
+    }
+    // Verify that the prefix is the allowed prefix
+    if (bip32PathLength < bip32PrefixLength) {
+        THROW(INVALID_PARAMETER);
+    }
+    for (i = 0; i < bip32PrefixLength; i++) {
+        if (bip32PathInt[i] != COIN_BIP32_PREFIX[i]) {
+            THROW(INVALID_PARAMETER);
+        }
+    }
+    os_perso_derive_node_bip32(LIBN_CURVE, bip32PathInt, bip32PathLength,
+                               out_privateKey, chainCode);
+    os_memset(chainCode, 0, sizeof(chainCode));
 
     if (out_publicKey != NULL) {
         ed25519_publickey(out_privateKey, out_publicKey);
@@ -299,18 +369,18 @@ uint32_t libn_simple_hash(uint8_t *data, size_t dataLen) {
 void libn_hash_block(libn_hash_t blockHash,
                      const libn_block_data_t *blockData,
                      const libn_public_key_t publicKey) {
-    blake2b_ctx *hash = &ram_b.blake2b_ctx_D;
-    blake2b_init(hash, sizeof(libn_hash_t), NULL, 0);
+    blake2b_ctx hash;
+    blake2b_init(&hash, sizeof(libn_hash_t), NULL, 0);
 
-    blake2b_update(hash, BLOCK_HASH_PREAMBLE, sizeof(BLOCK_HASH_PREAMBLE));
-    blake2b_update(hash, publicKey, sizeof(libn_public_key_t));
-    blake2b_update(hash, blockData->parent, sizeof(blockData->parent));
-    blake2b_update(hash, blockData->representative,
+    blake2b_update(&hash, BLOCK_HASH_PREAMBLE, sizeof(BLOCK_HASH_PREAMBLE));
+    blake2b_update(&hash, publicKey, sizeof(libn_public_key_t));
+    blake2b_update(&hash, blockData->parent, sizeof(blockData->parent));
+    blake2b_update(&hash, blockData->representative,
         sizeof(blockData->representative));
-    blake2b_update(hash, blockData->balance, sizeof(blockData->balance));
-    blake2b_update(hash, blockData->link, sizeof(blockData->link));
+    blake2b_update(&hash, blockData->balance, sizeof(blockData->balance));
+    blake2b_update(&hash, blockData->link, sizeof(blockData->link));
 
-    blake2b_final(hash, blockHash);
+    blake2b_final(&hash, blockHash);
 }
 
 void libn_sign_hash(libn_signature_t signature,
