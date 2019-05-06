@@ -19,13 +19,18 @@ ifeq ($(BOLOS_SDK),)
 $(error Environment variable BOLOS_SDK is not set)
 endif
 ifeq (customCA.key,$(wildcard customCA.key))
-	SCP_PRIVKEY=`cat customCA.key`
+    SCP_PRIVKEY=`cat customCA.key`
 endif
 include $(BOLOS_SDK)/Makefile.defines
 
 # Default to shared app
 ifeq ($(APP_TYPE),)
 APP_TYPE=shared
+endif
+
+# Default to library app
+ifndef COIN
+COIN=nano
 endif
 
 APP_LOAD_PARAMS = --curve ed25519 $(COMMON_LOAD_PARAMS)
@@ -121,8 +126,6 @@ all: default
 
 DEFINES   += OS_IO_SEPROXYHAL IO_SEPROXYHAL_BUFFER_SIZE_B=300
 DEFINES   += HAVE_BAGL HAVE_SPRINTF
-#DEFINES   += HAVE_PRINTF PRINTF=screen_printf
-DEFINES   += PRINTF\(...\)=
 DEFINES   += HAVE_IO_USB HAVE_L4_USBLIB IO_USB_MAX_ENDPOINTS=6 IO_HID_EP_LENGTH=64 HAVE_USB_APDU
 DEFINES   += APP_MAJOR_VERSION=$(APPVERSION_M) APP_MINOR_VERSION=$(APPVERSION_N) APP_PATCH_VERSION=$(APPVERSION_P)
 DEFINES   += MAX_ADPU_OUTPUT_SIZE=$(MAX_ADPU_OUTPUT_SIZE)
@@ -140,11 +143,40 @@ DEFINES   += APPVERSION=\"$(APPVERSION)\"
 DEFINES   += ED25519_CUSTOMHASH
 DEFINES   += ED25519_CUSTOMRANDOM
 
+# WebUSB
+WEBUSB_URL = www.ledgerwallet.com
+DEFINES   += HAVE_WEBUSB WEBUSB_URL_SIZE_B=$(shell echo -n $(WEBUSB_URL) | wc -c) WEBUSB_URL=$(shell echo -n $(WEBUSB_URL) | sed -e "s/./\\\'\0\\\',/g")
+
+# Enabling debug PRINTF
+DEBUG = 0
+ifneq ($(DEBUG),0)
+
+        ifeq ($(TARGET_NAME),TARGET_NANOX)
+                DEFINES   += HAVE_PRINTF PRINTF=mcu_usb_printf
+        else
+                DEFINES   += HAVE_PRINTF PRINTF=screen_printf
+        endif
+else
+        DEFINES   += PRINTF\(...\)=
+endif
+
 ##############
 # Compiler #
 ##############
-#GCCPATH   := $(BOLOS_ENV)/gcc-arm-none-eabi-5_3-2016q1/bin/
-#CLANGPATH := $(BOLOS_ENV)/clang-arm-fropi/bin/
+ifneq ($(BOLOS_ENV),)
+$(info BOLOS_ENV=$(BOLOS_ENV))
+CLANGPATH := $(BOLOS_ENV)/clang-arm-fropi/bin/
+GCCPATH := $(BOLOS_ENV)/gcc-arm-none-eabi-5_3-2016q1/bin/
+else
+$(info BOLOS_ENV is not set: falling back to CLANGPATH and GCCPATH)
+endif
+ifeq ($(CLANGPATH),)
+$(info CLANGPATH is not set: clang will be used from PATH)
+endif
+ifeq ($(GCCPATH),)
+$(info GCCPATH is not set: arm-none-eabi-* will be used from PATH)
+endif
+
 CC       := $(CLANGPATH)clang
 
 #CFLAGS   += -O0
@@ -176,7 +208,6 @@ include $(BOLOS_SDK)/Makefile.rules
 
 #add dependency on custom makefile filename
 dep/%.d: %.c Makefile
-
 
 listvariants:
 	@echo VARIANTS COIN nano banano nos
