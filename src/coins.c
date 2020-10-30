@@ -102,4 +102,37 @@ REGISTER_COINS(
         #endif // TARGET_BLUE
     })
     #endif
+
+    #if defined(HAVE_COIN_KIZUNANO)
+    COIN(LIBN_COIN_TYPE_KIZUNANO, {
+        .coinName = "KIZUNANO",
+        #if defined(TARGET_BLUE)
+        .coinBadge = &C_blue_badge_kizunano,
+        #else
+        .coinBadge = &C_nanos_badge_kizunano,
+        #endif
+        .bip32Prefix = { HARDENED(44), HARDENED(165) },
+        .addressPrimaryPrefix = "kizn_",
+        .addressSecondaryPrefix = "kiz_",
+        .addressDefaultPrefix = LIBN_SECONDARY_PREFIX,
+        .defaultUnit = "KIZN",
+        .defaultUnitScale = 6, // 1 KIZN = 10^6 raw
+        #if defined(TARGET_BLUE)
+        .colorBackground = 0xF9F9F9,
+        .colorForeground = 0x000000,
+        .colorAltBackground = 0x4A90E2,
+        .colorAltForeground = 0xE0FFFF,
+        .colorRejectBackground = 0xC6C6C6,
+        .colorRejectForeground = 0x000000,
+        .colorRejectOverBackground = 0xADADAD,
+        .colorRejectOverForeground = 0x000000,
+        .colorConfirmBackground = 0x4A90E2,
+        .colorConfirmForeground = 0xE0FFFF,
+        .colorConfirmOverBackground = 0x3177C9,
+        .colorConfirmOverForeground = 0xFFFFFF,
+        .iconToggleOff = &C_blue_icon_toggle_off,
+        .iconToggleOn = &C_blue_icon_toggle_on_kizunano,
+        #endif // TARGET_BLUE
+    })
+    #endif
 )

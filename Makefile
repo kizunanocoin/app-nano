@@ -54,6 +54,12 @@ NOS_PATH_PARAM = --path "44'/229'"
 NOS_COIN_TYPE = LIBN_COIN_TYPE_NOS
 ALL_PATH_PARAMS += $(NOS_PATH_PARAM)
 
+# KIZUNANO COIN config
+KIZUNANO_APP_NAME = "KIZUNANO"
+KIZUNANO_PATH_PARAM = --path "44'/777'"
+KIZUNANO_COIN_TYPE = LIBN_COIN_TYPE_KIZUNANO
+ALL_PATH_PARAMS += $(KIZUNANO_PATH_PARAM)
+
 ifeq ($(APP_TYPE), standalone)
     ifeq ($(TARGET_NAME),TARGET_NANOX)
 LIB_LOAD_FLAGS = --appFlags 0x250
@@ -76,6 +82,7 @@ DEFINES += SHARED_LIBRARY_NAME=\"$(NANO_APP_NAME)\"
 DEFINES += HAVE_COIN_NANO
 DEFINES += HAVE_COIN_BANANO
 DEFINES += HAVE_COIN_NOS
+DEFINES += HAVE_COIN_KIZUNANO
 
 else
 ifneq ($(MAKECMDGOALS),listvariants)
@@ -106,8 +113,14 @@ APP_LOAD_PARAMS += $(APP_LOAD_FLAGS) $(NOS_PATH_PARAM)
 DEFINES += HAVE_COIN_NOS
 DEFINES += DEFAULT_COIN_TYPE=$(NOS_COIN_TYPE)
 
+else ifeq ($(COIN),KIZUNANO)
+APPNAME = $(KIZUNANO_APP_NAME)
+APP_LOAD_PARAMS += $(APP_LOAD_FLAGS) $(KIZUNANO_PATH_PARAM)
+DEFINES += HAVE_COIN_KIZUNANO
+DEFINES += DEFAULT_COIN_TYPE=$(KIZUNANO_COIN_TYPE)
+
 else ifeq ($(filter clean listvariants,$(MAKECMDGOALS)),)
-$(error Unsupported COIN - use nano, banano, nos)
+$(error Unsupported COIN - use nano, banano, nos, kizunano)
 endif
 
 APPVERSION_M=1
@@ -240,4 +253,4 @@ include $(BOLOS_SDK)/Makefile.rules
 dep/%.d: %.c Makefile
 
 listvariants:
-	@echo VARIANTS COIN nano banano nos
+	@echo VARIANTS COIN nano banano nos kizunano

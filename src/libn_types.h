@@ -50,6 +50,7 @@ typedef enum {
     LIBN_COIN_TYPE_NANO,
     LIBN_COIN_TYPE_BANANO,
     LIBN_COIN_TYPE_NOS,
+    LIBN_COIN_TYPE_KIZUNANO,
 } libn_coin_type_t;
 
 typedef enum {
